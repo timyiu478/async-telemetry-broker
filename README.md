@@ -92,6 +92,7 @@ cargo run --release
 Logging is powered by tracing and outputs structured JSON by default. You can adjust the log level via environment variables:
 
 ```bash
+RUST_LOG=async_telemetry_broker=debug cargo run
 ```
 
 ### Running Tests
