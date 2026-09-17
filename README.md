@@ -54,7 +54,7 @@ cargo run --example throughput_bench --release
 * **Custom Binary Framing:** Implements `tokio_util::codec` for length-prefixed binary frames (4-byte Big-Endian length + payload) with automatic DOS protection against oversized frames.
 * **Non-Blocking Ingress:** Routes telemetry via `tokio::sync::broadcast`. Slow downstream consumers are actively warned (Lagged) but will never block the TCP ingress thread.
 * **Concurrent Rate Limiting:** Strictly bounds memory allocation and file descriptors via an asynchronous semaphore, safely queuing excess connection attempts without crashing.
-* **Idle Connection Timeouts:** Automatically detects and drops silent/hung TCP sockets if a ground station loses its RF link mid-pass without cleanly sending a `FIN` packet.
+* **Idle Connection Timeouts**: Automatically detects and drops silent or hung TCP sockets when a client abruptly loses connectivity without executing a clean TCP shutdown sequence (sending a FIN packet).
 * **Zero-Data-Loss Graceful Shutdown:** Utilizes `tokio_util::task::TaskTracker` and `CancellationToken`. Shutting down the broker ensures all active connections finish parsing their *current* in-progress frame and drain safely before the process exits.
 
 ## Protocol Specification
