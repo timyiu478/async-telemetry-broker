@@ -1,6 +1,6 @@
-# Async Telemetry Broker
+# Async Telemetry Ingestion Broker
 
-A high-performance, asynchronous TCP broker built with Rust and Tokio. Designed to ingest telemetry over unstable network links, frame the binary streams, and route them to downstream processing services without blocking.
+A high-performance, asynchronous TCP ingestion broker built with Rust and Tokio. Designed to ingest telemetry over unstable network links, frame the binary streams, and route them to downstream processing services without blocking.
 
 ## Video Walkthrough
 
