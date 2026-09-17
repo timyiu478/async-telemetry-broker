@@ -4,7 +4,7 @@ use async_telemetry_broker::{
 use bytes::{BufMut, BytesMut};
 use std::net::SocketAddr;
 use std::time::Duration;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncWriteExt, AsyncReadExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
@@ -221,4 +221,43 @@ async fn test_graceful_shutdown_drains_connection_tasks() {
         drain_result.is_ok(),
         "Broker failed to drain session tasks within shutdown timeout"
     );
+}
+
+#[tokio::test]
+async fn test_idle_connection_timeout() {
+    let addr = get_ephemeral_addr().await;
+    // Set a very short timeout for fast test execution
+    let config = Config::default()
+        .with_listen_addr(addr)
+        .with_broadcast_capacity(16);
+    
+    let mut config = config;
+    config.connection_timeout = Duration::from_millis(200);
+
+    let (tx, _) = broadcast::channel::<Frame>(config.broadcast_capacity);
+    let tracker = TaskTracker::new();
+    let cancel = CancellationToken::new();
+
+    let srv_tracker = tracker.clone();
+    let srv_cancel = cancel.clone();
+    tokio::spawn(async move {
+        server::run(config, tx, srv_tracker, srv_cancel).await.unwrap();
+    });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Connect client, but send NO bytes (idle client)
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+
+    // Wait past the 200ms timeout window
+    tokio::time::sleep(Duration::from_millis(350)).await;
+
+    // Attempting to read from socket should yield EOF (0 bytes read), confirming broker closed it
+    // Because a socket read will wait/block indefinitely if the connection is still open and idle,
+    // unblocking and returning 0 is the OS's explicit signal for EOF (End-of-File / Connection Closed).
+    let mut buf = [0u8; 10];
+    let bytes_read = stream.read(&mut buf).await.unwrap();
+    assert_eq!(bytes_read, 0, "Broker failed to drop idle connection");
+
+    cancel.cancel();
 }
