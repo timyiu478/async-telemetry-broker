@@ -1,8 +1,9 @@
 use futures_util::StreamExt;
 use std::error::Error;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::broadcast;
+use tokio::sync::{Semaphore, broadcast};
 use tokio_util::codec::FramedRead;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
@@ -21,30 +22,42 @@ pub async fn run(
     info!(addr = %config.listen_addr, "TCP listener bound successfully");
 
     let timeout = config.connection_timeout;
+    let semaphore = Arc::new(Semaphore::new(config.max_num_connections));
 
-    loop {
-        tokio::select! {
-            _ = cancel.cancelled() => {
-                info!("Server accept loop stopping due to cancellation signal.");
-                break;
-            }
-            accept_res = listener.accept() => {
-                match accept_res {
-                    Ok((socket, peer_addr)) => {
-                        info!(peer = %peer_addr, "Accepted new client TCP connection");
-                        let tx_clone = tx.clone();
-                        let cancel_clone = cancel.clone();
+    let accept_loop = async {
+        loop {
+            // Stage 1: Wait for permit (blocks here if at capacity)
+            let permit = match semaphore.clone().acquire_owned().await {
+                Ok(p) => p,
+                Err(_) => break, // Semaphore closed
+            };
 
-                        // Spawn and track client connection task
-                        tracker.spawn(async move {
-                            handle_connection(timeout, socket, tx_clone, cancel_clone).await;
-                        });
-                    }
-                    Err(err) => {
-                        warn!(error = %err, "Failed to accept TCP connection");
-                    }
+            // Stage 2: Wait for connection
+            match listener.accept().await {
+                Ok((socket, peer_addr)) => {
+                    info!(peer = %peer_addr, "Accepted new client TCP connection");
+                    let tx_clone = tx.clone();
+                    let cancel_clone = cancel.clone();
+
+                    tracker.spawn(async move {
+                        let _permit = permit; // RAII release on exit
+                        handle_connection(timeout, socket, tx_clone, cancel_clone).await;
+                    });
+                }
+                Err(err) => {
+                    warn!(error = %err, "Failed to accept TCP connection");
+                    // `permit` automatically drops and returns to the semaphore here
                 }
             }
+        }
+    };
+
+    tokio::select! {
+        _ = cancel.cancelled() => {
+            info!("Server accept loop stopping due to cancellation signal.");
+        }
+        _ = accept_loop => {
+            info!("Accept loop terminated.");
         }
     }
 

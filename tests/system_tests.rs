@@ -4,7 +4,7 @@ use async_telemetry_broker::{
 use bytes::{BufMut, BytesMut};
 use std::net::SocketAddr;
 use std::time::Duration;
-use tokio::io::{AsyncWriteExt, AsyncReadExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
@@ -230,7 +230,7 @@ async fn test_idle_connection_timeout() {
     let config = Config::default()
         .with_listen_addr(addr)
         .with_broadcast_capacity(16);
-    
+
     let mut config = config;
     config.connection_timeout = Duration::from_millis(200);
 
@@ -241,7 +241,9 @@ async fn test_idle_connection_timeout() {
     let srv_tracker = tracker.clone();
     let srv_cancel = cancel.clone();
     tokio::spawn(async move {
-        server::run(config, tx, srv_tracker, srv_cancel).await.unwrap();
+        server::run(config, tx, srv_tracker, srv_cancel)
+            .await
+            .unwrap();
     });
 
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -258,6 +260,65 @@ async fn test_idle_connection_timeout() {
     let mut buf = [0u8; 10];
     let bytes_read = stream.read(&mut buf).await.unwrap();
     assert_eq!(bytes_read, 0, "Broker failed to drop idle connection");
+
+    cancel.cancel();
+}
+
+#[tokio::test]
+async fn test_max_connections_rate_limiter() {
+    let addr = get_ephemeral_addr().await;
+    let config = Config::default()
+        .with_listen_addr(addr)
+        .with_max_num_connections(48);
+    let (tx, mut rx) = broadcast::channel::<Frame>(1024);
+    let tracker = TaskTracker::new();
+    let cancel = CancellationToken::new();
+
+    let srv_tracker = tracker.clone();
+    let srv_cancel = cancel.clone();
+    tokio::spawn(async move {
+        server::run(config, tx, srv_tracker, srv_cancel)
+            .await
+            .unwrap();
+    });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // 1. Fill all 48 connection permit slots
+    let mut active_sockets = Vec::new();
+    for _ in 0..48 {
+        let stream = TcpStream::connect(addr).await.unwrap();
+        active_sockets.push(stream);
+    }
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // 2. Open 49th connection and attempt to send telemetry
+    let mut extra_socket = TcpStream::connect(addr).await.unwrap();
+    let overflow_payload = b"overflow_client_frame";
+    extra_socket
+        .write_all(&encode_raw_frame(overflow_payload))
+        .await
+        .unwrap();
+    extra_socket.flush().await.unwrap();
+
+    // 3. Assert 49th frame is NOT processed (blocked waiting for semaphore permit)
+    let recv_result = tokio::time::timeout(Duration::from_millis(200), rx.recv()).await;
+    assert!(
+        recv_result.is_err(),
+        "Broker accepted 49th connection despite 48-connection rate limit!"
+    );
+
+    // 4. Drop one active connection to release a permit back to the pool
+    drop(active_sockets.pop());
+
+    // 5. Assert 49th connection unblocks and its queued frame gets processed
+    let frame = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("Timeout waiting for 49th connection frame after permit released")
+        .unwrap();
+
+    assert_eq!(frame.payload, &overflow_payload[..]);
 
     cancel.cancel();
 }

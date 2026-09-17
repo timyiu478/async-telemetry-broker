@@ -11,6 +11,7 @@ pub struct WorkerConfig {
 pub struct Config {
     pub listen_addr: SocketAddr,
     pub broadcast_capacity: usize,
+    pub max_num_connections: usize,
     pub connection_timeout: Duration,
     /// Maximum time to wait for active tasks to drain during graceful shutdown
     pub shutdown_timeout: Duration,
@@ -24,6 +25,7 @@ impl Default for Config {
                 .parse()
                 .expect("Failed to parse default listen address"),
             broadcast_capacity: 1024,
+            max_num_connections: 50,
             connection_timeout: Duration::from_secs(30),
             shutdown_timeout: Duration::from_secs(10),
             workers: vec![
@@ -52,6 +54,11 @@ impl Config {
 
     pub fn with_broadcast_capacity(mut self, capacity: usize) -> Self {
         self.broadcast_capacity = capacity;
+        self
+    }
+
+    pub fn with_max_num_connections(mut self, num_connections: usize) -> Self {
+        self.max_num_connections = num_connections;
         self
     }
 
